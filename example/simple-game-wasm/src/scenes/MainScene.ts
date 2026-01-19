@@ -2,25 +2,36 @@ import { Scene, Input, Types } from "phaser";
 import { Player } from "../gameobjects/Player";
 import { BlueEnemy } from "../gameobjects/BlueEnemy";
 import { Bullet } from "../gameobjects/Bullet";
-import { prepareNodes, payPlayerPoints, payBossPoints } from "../fiber";
+import { FiberGameSession } from "../fiber";
+
+enum GameState {
+    Idle = "idle",
+    Starting = "starting",
+    Running = "running",
+    Settling = "settling",
+}
+
+interface MainSceneInitData {
+    fiberSession?: FiberGameSession;
+}
 
 export class MainScene extends Scene {
     player: Player | null = null;
     enemy_blue: BlueEnemy | null = null;
     cursors!: Types.Input.Keyboard.CursorKeys;
-    bossNode: any = null;
-    playerNode: any = null;
+    fiberSession: FiberGameSession | null = null;
     bossPoints: number = 0;
     playerPoints: number = 0;
+    gameState: GameState = GameState.Idle;
 
     points: number = 0;
-    game_over_timeout: number = 20;
+    game_over_timeout: number = 5;
 
     constructor() {
         super("MainScene");
     }
 
-    async init(): Promise<void> {
+    async init(data: MainSceneInitData = {}): Promise<void> {
         this.cameras.main.fadeIn(1000, 0, 0, 0);
         this.scene.launch("MenuScene");
 
@@ -28,17 +39,22 @@ export class MainScene extends Scene {
         this.points = 0;
         this.bossPoints = 0;
         this.playerPoints = 0;
-        this.game_over_timeout = 20;
+        this.gameState = GameState.Idle;
+        this.registry.set("fiber-ready", false);
 
-        // Initialize Fiber nodes
-        try {
-            const { bossNode, playerNode } = await prepareNodes();
-            this.bossNode = bossNode;
-            this.playerNode = playerNode;
-            console.log("Fiber nodes initialized successfully");
-        } catch (error) {
-            console.error("Failed to initialize Fiber nodes:", error);
-        }
+        this.fiberSession = data.fiberSession ?? new FiberGameSession();
+
+        this.fiberSession
+            .start()
+            .then(() => {
+                this.registry.set("fiber-ready", true);
+                this.game.events.emit("fiber-ready");
+            })
+            .catch((error) => {
+                console.error("Failed to initialize Fiber session:", error);
+                this.registry.set("fiber-ready", false);
+                this.game.events.emit("fiber-error", error);
+            });
     }
 
     create(): void {
@@ -58,7 +74,26 @@ export class MainScene extends Scene {
         this.setupCollisions();
 
         // This event comes from MenuScene
-        this.game.events.on("start-game", () => {
+        this.game.events.on("start-game", async () => {
+            if (this.gameState !== GameState.Idle) {
+                return;
+            }
+            this.gameState = GameState.Starting;
+            try {
+                if (!this.fiberSession) {
+                    throw new Error("Fiber session not initialized");
+                }
+                await this.fiberSession.start();
+            } catch (error) {
+                console.error(
+                    "Cannot start game without ready channels:",
+                    error,
+                );
+                this.gameState = GameState.Idle;
+                return;
+            }
+            this.gameState = GameState.Running;
+
             this.scene.stop("MenuScene");
             this.scene.launch("HudScene", {
                 remaining_time: this.game_over_timeout,
@@ -73,19 +108,23 @@ export class MainScene extends Scene {
             }
 
             // Game Over timeout
-            this.time.addEvent({
+            const countdownEvent = this.time.addEvent({
                 delay: 1000,
                 loop: true,
-                callback: () => {
+                callback: async () => {
                     if (this.game_over_timeout === 0) {
+                        this.gameState = GameState.Settling;
+                        countdownEvent.remove(false);
                         // You need remove the event listener to avoid duplicate events.
                         this.game.events.removeListener("start-game");
                         // It is necessary to stop the scenes launched in parallel.
                         this.scene.stop("HudScene");
+
                         this.scene.start("GameOverScene", {
                             points: this.points,
                             playerPoints: this.playerPoints,
                             bossPoints: this.bossPoints,
+                            fiberSession: this.fiberSession,
                         });
                     } else {
                         this.game_over_timeout--;
@@ -141,13 +180,9 @@ export class MainScene extends Scene {
                         this.playerPoints += 10;
 
                         // Call payPlayerPoints when player hits enemy
-                        if (this.bossNode && this.playerNode) {
+                        if (this.fiberSession) {
                             try {
-                                await payPlayerPoints(
-                                    this.bossNode,
-                                    this.playerNode,
-                                    10,
-                                );
+                                await this.fiberSession.payPlayerPoints(10);
                             } catch (error) {
                                 console.error("Failed to score point:", error);
                             }
@@ -179,13 +214,9 @@ export class MainScene extends Scene {
                         this.bossPoints += 10;
 
                         // Call payBossPoints when enemy hits player
-                        if (this.bossNode && this.playerNode) {
+                        if (this.fiberSession) {
                             try {
-                                await payBossPoints(
-                                    this.bossNode,
-                                    this.playerNode,
-                                    10,
-                                );
+                                await this.fiberSession.payBossPoints(10);
                             } catch (error) {
                                 console.error(
                                     "Failed to process lose point:",

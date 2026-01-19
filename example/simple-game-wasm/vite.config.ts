@@ -5,6 +5,10 @@ export default defineConfig({
     base: "./",
     plugins: [tailwindcss()],
     server: {
+        headers: {
+            "Cross-Origin-Opener-Policy": "same-origin",
+            "Cross-Origin-Embedder-Policy": "require-corp",
+        },
         proxy: {
             "/node1-api": {
                 target: "http://localhost:8227",
@@ -14,6 +18,12 @@ export default defineConfig({
                 target: "http://localhost:8237",
                 changeOrigin: true,
             },
+        },
+    },
+    preview: {
+        headers: {
+            "Cross-Origin-Opener-Policy": "same-origin",
+            "Cross-Origin-Embedder-Policy": "require-corp",
         },
     },
 });

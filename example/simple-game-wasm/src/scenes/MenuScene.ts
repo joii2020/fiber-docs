@@ -49,24 +49,36 @@ export class MenuScene extends Scene {
                 this.scale.width / 2,
                 this.scale.height / 2 + 85,
                 "pixelfont",
-                "CLICK TO START",
+                "CONNECTING...",
                 24,
             )
             .setOrigin(0.5, 0.5);
 
-        // Tween to blink the text
-        this.tweens.add({
-            targets: start_msg,
-            alpha: 0,
-            duration: 800,
-            ease: (value: number) => Math.abs(Math.round(value)),
-            yoyo: true,
-            repeat: -1,
-        });
+        const enableStart = () => {
+            start_msg.setText("CLICK TO START");
+            // Tween to blink the text
+            this.tweens.add({
+                targets: start_msg,
+                alpha: 0,
+                duration: 800,
+                ease: (value: number) => Math.abs(Math.round(value)),
+                yoyo: true,
+                repeat: -1,
+            });
 
-        // Send start-game event when user clicks
-        this.input.on("pointerdown", () => {
-            this.game.events.emit("start-game");
+            // Send start-game event when user clicks
+            this.input.once("pointerdown", () => {
+                this.game.events.emit("start-game");
+            });
+        };
+
+        if (this.registry.get("fiber-ready") === true) {
+            enableStart();
+        } else {
+            this.game.events.once("fiber-ready", enableStart);
+        }
+        this.game.events.once("fiber-error", () => {
+            start_msg.setText("CONNECT FAILED");
         });
     }
 }
