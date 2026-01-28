@@ -1,6 +1,14 @@
 import "./style.css";
 import type { Channel, CkbInvoice } from "@nervosnetwork/fiber-js";
-import { FiberNode, defaultNodeKeys, isValidKey, relayNodeInfo } from "./fiber";
+import {
+    FiberNode,
+    type RelayNodeInfo,
+    defaultNodeKeys,
+    getRelayNodeInfo,
+    isValidKey,
+    relayNodeInfo,
+    updateRelayNodeInfo,
+} from "./fiber";
 import { sleep } from "@ckb-ccc/core";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -27,11 +35,14 @@ app.innerHTML = `
                     <span class="tag">Shared Relay</span>
                     <span class="tag">Testnet</span>
                 </div>
+                <label class="field">
+                    <span>Relay Address</span>
+                    <input type="text" placeholder="/ip4/.../p2p/..." data-role="relay-address" autocomplete="off" />
+                </label>
+                <div class="meta" data-role="relay-hint"></div>
                 <div class="relay-meta">
                     <div class="label">Peer ID</div>
-                    <div>${relayNodeInfo.peerId}</div>
-                    <div class="label">Address</div>
-                    <div>${relayNodeInfo.address}</div>
+                    <div data-role="relay-peer-id">${getRelayNodeInfo().peerId}</div>
                 </div>
             </article>
             <article class="card node" data-node="left" data-delay="1">
@@ -185,6 +196,49 @@ app.innerHTML = `
 type NodeStatus = "idle" | "creating" | "ready" | "connecting" | "connected" | "error";
 
 const CKB_SHANNONS = 100000000n;
+
+const relayAddressInput = document.querySelector<HTMLInputElement>("[data-role='relay-address']");
+const relayPeerIdEl = document.querySelector<HTMLDivElement>("[data-role='relay-peer-id']");
+const relayHintEl = document.querySelector<HTMLDivElement>("[data-role='relay-hint']");
+if (!relayAddressInput || !relayPeerIdEl || !relayHintEl) {
+    throw new Error("Missing relay inputs");
+}
+
+const parseRelayPeerId = (address: string) =>
+    address.trim().match(/\/p2p\/([^/]+)(?:\/|$)/)?.[1] ?? "";
+
+const getRelayInfoFromUI = (): RelayNodeInfo => {
+    const address = relayAddressInput.value.trim();
+    return { address, peerId: parseRelayPeerId(address) };
+};
+
+const syncRelayInfo = () => {
+    const address = relayAddressInput.value.trim();
+    const peerId = parseRelayPeerId(address);
+    updateRelayNodeInfo({ address });
+    if (!address || !peerId) {
+        relayPeerIdEl.textContent = "Invalid relay address";
+        relayHintEl.textContent = "Relay address must include /p2p/<peer-id>.";
+        return false;
+    }
+    relayPeerIdEl.textContent = peerId;
+    relayHintEl.textContent = "";
+    return true;
+};
+
+relayAddressInput.value = relayNodeInfo.address;
+syncRelayInfo();
+relayAddressInput.addEventListener("input", () => {
+    syncRelayInfo();
+});
+
+const lockRelayAddress = () => {
+    relayAddressInput.disabled = true;
+};
+
+const unlockRelayAddress = () => {
+    relayAddressInput.disabled = false;
+};
 
 const randomHex32 = (): `0x${string}` => {
     const bytes = new Uint8Array(32);
@@ -758,12 +812,18 @@ const setupNodeCard = (
             } catch (error) {
                 const message = error instanceof Error ? error.message : "Failed to create node.";
                 setStatus("error", message);
+                inputEl.disabled = false;
                 return;
             }
         }
         setStatus("connecting", "Connecting to relay...");
+        const relayInfo = getRelayInfoFromUI();
+        if (!relayInfo.address || !relayInfo.peerId) {
+            setStatus("error", "Relay address is invalid.");
+            return;
+        }
         try {
-            await fiberClient.connectRelay();
+            await fiberClient.connectRelay(relayInfo);
             setStatus("connected", "Relay connected.");
             await refreshChannels();
         } catch (error) {
@@ -782,6 +842,8 @@ const setupNodeCard = (
         try {
             await fiberClient.stopNode();
             setStatus("idle", "Node stopped.");
+            inputEl.disabled = false;
+            unlockRelayAddress();
         } catch (error) {
             const message = error instanceof Error ? error.message : "Failed to stop node.";
             setStatus("error", message);
@@ -800,7 +862,7 @@ const setupNodeCard = (
         channelEmptyEl.hidden = false;
         updateActions();
         try {
-            await fiberClient.openChannel();
+            await fiberClient.openChannel(getRelayInfoFromUI());
             hintEl.textContent = "Channel request sent.";
             await refreshChannels();
         } catch (error) {
@@ -844,6 +906,8 @@ const setupNodeCard = (
         if (onManualInit) {
             onManualInit();
         }
+        lockRelayAddress();
+        inputEl.disabled = true;
         void onCreateConnect();
     });
     createChannelBtn.addEventListener("click", onCreateChannel);
@@ -878,6 +942,7 @@ const disableInitBoth = () => {
         isManualInitStarted = true;
         createAllBtn.disabled = true;
     }
+    lockRelayAddress();
 };
 
 type NodeSnapshot = { status: NodeStatus; channels: Channel[] };
@@ -930,16 +995,18 @@ const nodeControllers = nodeCards.map((card) => {
 
 createAllBtn.addEventListener("click", async () => {
     createAllBtn.disabled = true;
+    lockRelayAddress();
     await Promise.all(nodeControllers.map((controller) => controller.createAndConnect()));
 });
 
 fundRelayBtn.addEventListener("click", async () => {
     relayFundTriggered = true;
     fundRelayBtn.disabled = true;
+    const relayInfo = getRelayInfoFromUI();
     try {
         await Promise.all([
-            fiberNodes.left.sendRelayFunds(300n),
-            fiberNodes.right.sendRelayFunds(300n),
+            fiberNodes.left.sendRelayFunds(relayInfo, 300n),
+            fiberNodes.right.sendRelayFunds(relayInfo, 300n),
         ]);
     } finally {
         await sleep(500);

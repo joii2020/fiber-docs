@@ -2,14 +2,29 @@ import { bytesFrom, hexFrom } from "@ckb-ccc/core";
 import { Fiber, randomSecretKey } from "@nervosnetwork/fiber-js";
 import type { HexString, InvoiceResult, NewInvoiceParams } from "@nervosnetwork/fiber-js";
 
-export const relayNodeInfo = {
-    peerId: "QmdzY4DaMZjcB7tW91njRkHj8uootQXyzbFrxXTSVsQqEp",
-    address:
-        "/ip4/127.0.0.1/tcp/8248/ws/p2p/QmdzY4DaMZjcB7tW91njRkHj8uootQXyzbFrxXTSVsQqEp",
+export type RelayNodeInfo = {
+    peerId: string;
+    address: string;
 };
 
-const nodeAKey = "0xac70c6ce96ff0649102612c3938adc501c8f771bff9d900551d34a29a7c59c44";
-const nodeBKey = "0x78bd9b4af0552a8292dda617a63c5d1db9b0af9d33c8532882224926e23eb761";
+const parseRelayPeerId = (address: string) =>
+    address.trim().match(/\/p2p\/([^/]+)(?:\/|$)/)?.[1] ?? "";
+
+export const relayNodeInfo = {
+    address: "/ip4/127.0.0.1/tcp/8248/ws/p2p/QmdzY4DaMZjcB7tW91njRkHj8uootQXyzbFrxXTSVsQqEp",
+};
+
+export const getRelayNodeInfo = (): RelayNodeInfo => {
+    const peerId = parseRelayPeerId(relayNodeInfo.address);
+    return { address: relayNodeInfo.address, peerId };
+};
+
+export const updateRelayNodeInfo = (next: { address: string }) => {
+    relayNodeInfo.address = next.address;
+};
+
+const nodeAKey = "0x7ab050ecf4375b1e2faa3c7331c3071582830a07d14c36990b4d3893bddec399";
+const nodeBKey = "0xe1c4e6d87ed8bb389d625aca2bd600427dab59a5c665ced090698640cf596570";
 export const defaultNodeKeys = {
     A: nodeAKey,
     B: nodeBKey,
@@ -100,17 +115,17 @@ export class FiberNode {
         this.fiber = fiber
     }
 
-    async connectRelay() {
+    async connectRelay(relayInfo: RelayNodeInfo) {
         if (!this.fiber) {
             throw new Error("Fiber node not created.");
         }
-        await this.fiber.connectPeer({ address: relayNodeInfo.address });
+        await this.fiber.connectPeer({ address: relayInfo.address });
 
         // wait
         for (let attempt = 0; attempt < 20; attempt += 1) {
             const peers = await this.fiber.listPeers();
             console.log(`${JSON.stringify(peers)}`);
-            if (peers?.peers?.some((peer: { peer_id?: string }) => peer.peer_id === relayNodeInfo.peerId)) {
+            if (peers?.peers?.some((peer: { peer_id?: string }) => peer.peer_id === relayInfo.peerId)) {
                 return;
             }
             await sleep(400);
@@ -118,23 +133,23 @@ export class FiberNode {
         throw new Error("Relay connection timed out");
     }
 
-    private async getRelayPubkey() {
+    private async getRelayPubkey(relayInfo: RelayNodeInfo) {
         if (!this.fiber) {
             throw new Error("Fiber node not created.");
         }
         const peers = await this.fiber.listPeers();
-        const relayPeer = peers?.peers?.find((peer) => peer.peer_id === relayNodeInfo.peerId);
+        const relayPeer = peers?.peers?.find((peer) => peer.peer_id === relayInfo.peerId);
         if (!relayPeer?.pubkey) {
             throw new Error("Relay public key not found.");
         }
         return relayPeer.pubkey;
     }
 
-    async sendRelayFunds(amountCkb: bigint) {
+    async sendRelayFunds(relayInfo: RelayNodeInfo, amountCkb: bigint) {
         if (!this.fiber) {
             throw new Error("Fiber node not created.");
         }
-        const relayPubkey = await this.getRelayPubkey();
+        const relayPubkey = await this.getRelayPubkey(relayInfo);
         const amountHex = `0x${(amountCkb * CKB_SHANNONS).toString(16)}` as `0x${string}`;
         await this.fiber.sendPayment({
             target_pubkey: relayPubkey,
@@ -143,12 +158,13 @@ export class FiberNode {
         });
     }
 
-    async openChannel() {
+    async openChannel(relayInfo: RelayNodeInfo) {
         if (!this.fiber) {
             throw new Error("Fiber node not created.");
         }
+        const timer = new Timer(`fiber.openChannel ${this.nodeName}`);
         await this.fiber.openChannel({
-            peer_id: relayNodeInfo.peerId,
+            peer_id: relayInfo.peerId,
             funding_amount: DEFAULT_FUNDING_AMOUNT_HEX,
             public: true,
         });
